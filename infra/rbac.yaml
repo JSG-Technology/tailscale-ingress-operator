@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tailscale-ingress-operator-role
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["watch", "list", "get"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tailscale-ingress-operator-binding
+subjects:
+  - kind: ServiceAccount
+    name: tailscale-ingress-operator
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: tailscale-ingress-operator-role
+  apiGroup: rbac.authorization.k8s.io

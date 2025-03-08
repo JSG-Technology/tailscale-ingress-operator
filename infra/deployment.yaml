@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailscale-ingress-operator
+  namespace: kube-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tailscale-ingress-operator
+  template:
+    metadata:
+      labels:
+        app: tailscale-ingress-operator
+    spec:
+      serviceAccountName: tailscale-ingress-operator
+      containers:
+        - name: tailscale-ingress-operator
+          image: jgaudette/tailscale-ingress-operator:1.0.0
