@@ -17,3 +17,4 @@ spec:
       containers:
         - name: tailscale-ingress-operator
           image: jgaudette/tailscale-ingress-operator:1.0.0
+          imagePullPolicy: Always

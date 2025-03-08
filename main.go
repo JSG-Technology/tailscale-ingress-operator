@@ -17,15 +17,23 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// Annotation key for services that should have auto-generated ingresses
+const AutoIngressAnnotation = "jsgtechnology.com/tailscale-autoingress"
+
 func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
+	// Check if service has the required annotation
+	if _, ok := service.Annotations[AutoIngressAnnotation]; !ok {
+		// Skip services without the annotation
+		return
+	}
+
 	// Skip if service has no ports
 	if len(service.Spec.Ports) == 0 {
 		log.Printf("Skipping service %s: no ports defined", service.Name)
 		return
 	}
 
-	ingressName := fmt.Sprintf("ingress-%s", service.Name)
-	hostName := fmt.Sprintf("%s.yourdomain.com", service.Name)
+	ingressName := fmt.Sprintf("%s-ingress", service.Name)
 
 	// Check if ingress already exists
 	_, err := clientset.NetworkingV1().Ingresses(service.Namespace).Get(context.TODO(), ingressName, metav1.GetOptions{})
@@ -39,37 +47,27 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 		return
 	}
 
+	// Define the ingress class name
+	ingressClassName := "tailscale"
+
 	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      ingressName,
 			Namespace: service.Namespace,
-			Annotations: map[string]string{
-				"tailscale.com/enable":   "true",
-				"tailscale.com/hostname": hostName,
-			},
 		},
 		Spec: networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: hostName,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/",
-									PathType: func() *networkingv1.PathType { p := networkingv1.PathTypePrefix; return &p }(),
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: service.Name,
-											Port: networkingv1.ServiceBackendPort{
-												Number: service.Spec.Ports[0].Port,
-											},
-										},
-									},
-								},
-							},
-						},
+			IngressClassName: &ingressClassName,
+			DefaultBackend: &networkingv1.IngressBackend{
+				Service: &networkingv1.IngressServiceBackend{
+					Name: service.Name,
+					Port: networkingv1.ServiceBackendPort{
+						Number: service.Spec.Ports[0].Port,
 					},
+				},
+			},
+			TLS: []networkingv1.IngressTLS{
+				{
+					Hosts: []string{service.Name},
 				},
 			},
 		},
@@ -79,7 +77,14 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 	if err != nil {
 		log.Printf("Failed to create Ingress for service %s: %v", service.Name, err)
 	} else {
-		log.Printf("Ingress created: %s -> %s", service.Name, hostName)
+		log.Printf("Ingress created: %s -> %s", service.Name, service.Name)
+	}
+}
+
+func handleService(clientset *kubernetes.Clientset, service *v1.Service, action string) {
+	if _, ok := service.Annotations[AutoIngressAnnotation]; ok {
+		log.Printf("%s service with %s annotation: %s", action, AutoIngressAnnotation, service.Name)
+		createIngress(clientset, service)
 	}
 }
 
@@ -102,7 +107,7 @@ func main() {
 	stopCh := make(chan struct{})
 	defer runtime.HandleCrash()
 
-	// Watch for new services
+	// Watch for new and updated services
 	serviceInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			service, ok := obj.(*v1.Service)
@@ -110,12 +115,33 @@ func main() {
 				log.Println("Could not parse Service object")
 				return
 			}
-			log.Printf("New service detected: %s", service.Name)
-			createIngress(clientset, service)
+			handleService(clientset, service, "New")
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldService, ok := oldObj.(*v1.Service)
+			if !ok {
+				log.Println("Could not parse old Service object")
+				return
+			}
+
+			newService, ok := newObj.(*v1.Service)
+			if !ok {
+				log.Println("Could not parse new Service object")
+				return
+			}
+
+			// Check if the annotation was added in this update
+			_, oldHasAnnotation := oldService.Annotations[AutoIngressAnnotation]
+			_, newHasAnnotation := newService.Annotations[AutoIngressAnnotation]
+
+			if !oldHasAnnotation && newHasAnnotation {
+				handleService(clientset, newService, "Updated")
+			}
 		},
 	})
 
-	log.Println("Starting Kubernetes Ingress Operator...")
+	log.Println("Starting Tailscale Ingress Operator...")
+	log.Printf("Watching for services with '%s' annotation", AutoIngressAnnotation)
 	factory.Start(stopCh)
 	factory.WaitForCacheSync(stopCh)
 
