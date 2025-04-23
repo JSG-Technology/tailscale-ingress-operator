@@ -81,6 +81,29 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 	}
 }
 
+func deleteIngress(clientset *kubernetes.Clientset, service *v1.Service) {
+	ingressName := fmt.Sprintf("%s-ingress", service.Name)
+
+	// Check if ingress exists before trying to delete it
+	_, err := clientset.NetworkingV1().Ingresses(service.Namespace).Get(context.TODO(), ingressName, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		// Ingress doesn't exist, nothing to do
+		return
+	} else if err != nil {
+		// Unexpected error
+		log.Printf("Error checking for existing ingress %s: %v", ingressName, err)
+		return
+	}
+
+	// Delete the ingress
+	err = clientset.NetworkingV1().Ingresses(service.Namespace).Delete(context.TODO(), ingressName, metav1.DeleteOptions{})
+	if err != nil {
+		log.Printf("Failed to delete Ingress %s: %v", ingressName, err)
+	} else {
+		log.Printf("Ingress deleted: %s", ingressName)
+	}
+}
+
 func handleService(clientset *kubernetes.Clientset, service *v1.Service, action string) {
 	if _, ok := service.Annotations[AutoIngressAnnotation]; ok {
 		log.Printf("%s service with %s annotation: %s", action, AutoIngressAnnotation, service.Name)
@@ -135,7 +158,34 @@ func main() {
 			_, newHasAnnotation := newService.Annotations[AutoIngressAnnotation]
 
 			if !oldHasAnnotation && newHasAnnotation {
+				// Annotation was added
 				handleService(clientset, newService, "Updated")
+			} else if oldHasAnnotation && !newHasAnnotation {
+				// Annotation was removed
+				log.Printf("Annotation %s removed from service: %s", AutoIngressAnnotation, newService.Name)
+				deleteIngress(clientset, newService)
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			service, ok := obj.(*v1.Service)
+			if !ok {
+				// When a delete is observed, the object might be a DeletedFinalStateUnknown tombstone
+				tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+				if !ok {
+					log.Println("Could not parse deleted Service object")
+					return
+				}
+				service, ok = tombstone.Obj.(*v1.Service)
+				if !ok {
+					log.Println("Could not parse Service from tombstone")
+					return
+				}
+			}
+
+			// Check if the deleted service had our annotation
+			if _, ok := service.Annotations[AutoIngressAnnotation]; ok {
+				log.Printf("Service with %s annotation deleted: %s", AutoIngressAnnotation, service.Name)
+				deleteIngress(clientset, service)
 			}
 		},
 	})

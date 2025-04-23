@@ -9,3 +9,8 @@ docker-push: docker-build
 
 docker-run: docker-build
   docker run -it jgaudette/tailscale-ingress-operator:1.0.0
+
+deploy: docker-push
+  kubectl delete -f infra/deployment.yaml
+  sleep 10
+  kubectl apply -f infra/deployment.yaml
