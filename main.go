@@ -22,7 +22,8 @@ const AutoIngressAnnotation = "jsgtechnology.com/tailscale-autoingress"
 
 func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 	// Check if service has the required annotation
-	if _, ok := service.Annotations[AutoIngressAnnotation]; !ok {
+	annotationValue, ok := service.Annotations[AutoIngressAnnotation]
+	if !ok {
 		// Skip services without the annotation
 		return
 	}
@@ -36,11 +37,29 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 	ingressName := fmt.Sprintf("%s-ingress", service.Name)
 
 	// Check if ingress already exists
-	_, err := clientset.NetworkingV1().Ingresses(service.Namespace).Get(context.TODO(), ingressName, metav1.GetOptions{})
+	existingIngress, err := clientset.NetworkingV1().Ingresses(service.Namespace).Get(context.TODO(), ingressName, metav1.GetOptions{})
 	if err == nil {
-		// Ingress already exists, skip creation
-		log.Printf("Ingress %s already exists, skipping creation", ingressName)
-		return
+		// Ingress already exists, check if hostname has changed
+		if len(existingIngress.Spec.TLS) > 0 && len(existingIngress.Spec.TLS[0].Hosts) > 0 {
+			currentHostname := existingIngress.Spec.TLS[0].Hosts[0]
+			newHostname := service.Name
+			if annotationValue != "true" {
+				newHostname = annotationValue
+			}
+
+			if currentHostname != newHostname {
+				log.Printf("Hostname changed from %s to %s, recreating ingress", currentHostname, newHostname)
+				deleteIngress(clientset, service)
+			} else {
+				// Hostname is the same, skip creation
+				log.Printf("Ingress %s already exists with correct hostname, skipping creation", ingressName)
+				return
+			}
+		} else {
+			// Ingress exists but doesn't have hostname info, skip creation
+			log.Printf("Ingress %s already exists, skipping creation", ingressName)
+			return
+		}
 	} else if !errors.IsNotFound(err) {
 		// Unexpected error
 		log.Printf("Error checking for existing ingress %s: %v", ingressName, err)
@@ -49,6 +68,11 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 
 	// Define the ingress class name
 	ingressClassName := "tailscale"
+
+	hostname := service.Name
+	if annotationValue != "true" {
+		hostname = annotationValue
+	}
 
 	ingress := &networkingv1.Ingress{
 		ObjectMeta: metav1.ObjectMeta{
@@ -67,7 +91,7 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 			},
 			TLS: []networkingv1.IngressTLS{
 				{
-					Hosts: []string{service.Name},
+					Hosts: []string{hostname},
 				},
 			},
 		},
@@ -77,7 +101,7 @@ func createIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 	if err != nil {
 		log.Printf("Failed to create Ingress for service %s: %v", service.Name, err)
 	} else {
-		log.Printf("Ingress created: %s -> %s", service.Name, service.Name)
+		log.Printf("Ingress created: %s -> %s", service.Name, hostname)
 	}
 }
 
@@ -105,8 +129,8 @@ func deleteIngress(clientset *kubernetes.Clientset, service *v1.Service) {
 }
 
 func handleService(clientset *kubernetes.Clientset, service *v1.Service, action string) {
-	if _, ok := service.Annotations[AutoIngressAnnotation]; ok {
-		log.Printf("%s service with %s annotation: %s", action, AutoIngressAnnotation, service.Name)
+	if annotationValue, ok := service.Annotations[AutoIngressAnnotation]; ok {
+		log.Printf("%s service with %s annotation: %s (value: %s)", action, AutoIngressAnnotation, service.Name, annotationValue)
 		createIngress(clientset, service)
 	}
 }
@@ -153,9 +177,9 @@ func main() {
 				return
 			}
 
-			// Check if the annotation was added in this update
-			_, oldHasAnnotation := oldService.Annotations[AutoIngressAnnotation]
-			_, newHasAnnotation := newService.Annotations[AutoIngressAnnotation]
+			// Check if the annotation was added, removed, or changed
+			oldValue, oldHasAnnotation := oldService.Annotations[AutoIngressAnnotation]
+			newValue, newHasAnnotation := newService.Annotations[AutoIngressAnnotation]
 
 			if !oldHasAnnotation && newHasAnnotation {
 				// Annotation was added
@@ -164,6 +188,11 @@ func main() {
 				// Annotation was removed
 				log.Printf("Annotation %s removed from service: %s", AutoIngressAnnotation, newService.Name)
 				deleteIngress(clientset, newService)
+			} else if oldHasAnnotation && newHasAnnotation && oldValue != newValue {
+				// Annotation value changed
+				log.Printf("Annotation %s value changed from %s to %s for service: %s", 
+					AutoIngressAnnotation, oldValue, newValue, newService.Name)
+				createIngress(clientset, newService)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {

@@ -50,10 +50,12 @@ To enable automatic Ingress creation for a service, add the following annotation
 ```yaml
 metadata:
   annotations:
-    jsgtechnology.com/tailscale-autoingress: "true"
+    jsgtechnology.com/tailscale-autoingress: "true"  # Uses service name as hostname
+    # OR
+    jsgtechnology.com/tailscale-autoingress: "custom-hostname"  # Uses "custom-hostname" as hostname
 ```
 
-Example service manifest:
+Example service manifest with service name as hostname:
 
 ```yaml
 apiVersion: v1
@@ -70,10 +72,29 @@ spec:
     app: my-app
 ```
 
+Example service manifest with custom hostname:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-service
+  annotations:
+    jsgtechnology.com/tailscale-autoingress: "mealie"  # Will use "mealie" as the hostname
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+  selector:
+    app: my-app
+```
+
 The operator will automatically create an Ingress resource named `my-service-ingress` with the following characteristics:
 - Uses the `tailscale` IngressClass
 - Forwards traffic to the first port defined in the service
-- Configures TLS with the service name as the host
+- Configures TLS with either:
+  - The service name as the host (if annotation value is "true")
+  - The annotation value as the host (if annotation value is not "true")
 
 ## Development
 
@@ -105,4 +126,4 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduc
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for a history of changes to this project. 
+See [CHANGELOG.md](CHANGELOG.md) for a history of changes to this project.      
